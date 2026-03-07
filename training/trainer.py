@@ -24,7 +24,9 @@ def build_training_args(config: dict) -> TrainingArguments:
     Returns:
         TrainingArguments instance.
     """
-    ...
+    args_dict = dict(config)
+    return TrainingArguments(**args_dict)
+
 
 
 def build_trainer(
@@ -48,5 +50,12 @@ def build_trainer(
     Returns:
         Configured Trainer instance.
     """
-    ...
+    return Trainer(
+        model=model,
+        args=args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        compute_metrics=compute_metrics if compute_metrics is not None else None,
+        data_collator= data_collator if data_collator else None,
+    )
 
