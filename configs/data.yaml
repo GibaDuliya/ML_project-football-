@@ -1,0 +1,37 @@
+# ===========================================================================
+# Data configuration — vocab sizes, special tokens, column definitions
+# ===========================================================================
+
+# --- Paths -----------------------------------------------------------------
+raw_csv_path: "dataset/df_raw_counts_players_matches.csv"
+processed_dir: "dataset/processed/"       # output of preprocessing
+metadata_dir: "dataset/metadata/"         # pickled mappings name↔id
+
+# --- Sequence geometry -----------------------------------------------------
+team_max_players: 18          # max players per team in one match
+max_seq_length: 36            # = 2 * team_max_players (both teams padded) ## в статье вроде 80 ??
+
+# --- Vocabulary sizes (set by preprocessing, overridden at runtime) --------
+players_vocab_size: null      # filled after preprocessing (unique players + mask + pad)
+teams_vocab_size: null
+positions_vocab_size: 25      # StatsBomb annotation: 25 positions
+
+# --- Special token IDs (set by preprocessing) ------------------------------
+player_mask_token_id: null
+player_pad_token_id: null
+team_pad_token_id: null
+position_pad_token_id: 25     # == positions_vocab_size (appended index)
+
+# --- Raw stat features -----------------------------------------------------
+form_stats_size: 39           # 39 event-count features per player per match
+
+# --- Metadata columns (dropped before feeding stats to the model) ----------
+id_columns:
+  - player_name
+  - team_name
+  - competition_name
+  - season_name
+  - match_id
+  - position_id
+  - position_name
+  - is_aligned # что это за столбец?

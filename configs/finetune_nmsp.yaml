@@ -1,0 +1,73 @@
+# ===========================================================================
+# Next Match Statistics Prediction (NMSP) fine-tuning configuration
+# ===========================================================================
+
+data_config: "configs/data.yaml"
+dev_ratio: 0.20
+
+# --- Which statistics to predict (team-level, per match) -------------------
+# 18 stats as in the paper (Table 3): passing, offense, defense, goalkeeping
+target_stats:
+  - pass_total
+  - pass_cross
+  - pass_shot_assist
+  - pass_goal_assist
+  - pass_through_ball
+  - shot_total
+  - shot_statsbomb_xg
+  - shot_goal
+  - interception_won
+  - block_total
+  - clearance_total
+  - ball_recovery_total
+  - counterpress_total
+  - dribble_complete
+  - foul_won_total
+  - foul_committed_total
+  - goalkeeper_save
+  - goalkeeper_shot_faced
+
+num_target_stats: 18
+
+# --- Aggregated TPE size for NMSP (sum/mean/std × 39 stats × 2 windows) --- ### вызывает подозрения?
+nmsp_tpe_size: 234
+
+# --- Pre-trained checkpoint to load encoder from --------------------------
+pretrained_checkpoint: "outputs/mpp/best_model"
+
+# --- Model -----------------------------------------------------------------
+model:
+  embed_size: 128
+  num_layers: 1
+  num_heads: 2
+  forward_expansion: 4
+  dropout: 0.05
+  use_teams_embeddings: false
+  position_enc_type: "learned"  # "learned" (paper default) | "sinusoidal" (BERT-style fixed)
+  freeze_encoder: false        # if true, only train the head
+
+# --- Head ------------------------------------------------------------------
+head:
+  type: "nmsp"                 # registered head name in heads.py
+  # NMSP head: flatten all player reps → MLP → 2 * num_target_stats
+  hidden_dim: 512
+
+# --- Training --------------------------------------------------------------
+training:
+  output_dir: "outputs/nmsp"
+  num_train_epochs: 333
+  per_device_train_batch_size: 1
+  sample_batch_size: 256
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  lr_scheduler_type: "linear"
+  seed: 42
+
+  logging_strategy: "steps"
+  logging_steps: 100
+  evaluation_strategy: "steps"
+  eval_steps: 100
+  save_strategy: "steps"
+  save_steps: 500
+  report_to: "tensorboard"

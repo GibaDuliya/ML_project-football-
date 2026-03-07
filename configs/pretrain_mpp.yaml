@@ -1,0 +1,40 @@
+# ===========================================================================
+# Masked Player Prediction (MPP) pre-training configuration
+# ===========================================================================
+
+# --- Data ------------------------------------------------------------------
+data_config: "configs/data.yaml"
+mask_percentage: 0.25         # fraction of playing players to mask per match
+augmentation_repeats: 10      # how many times to re-sample masks per match ? в стаье 10 вроде ?
+dev_ratio: 0.05               # validation fraction (of augmented batches)
+
+# --- Model -----------------------------------------------------------------
+model:
+  embed_size: 128
+  num_layers: 1
+  num_heads: 2
+  forward_expansion: 4
+  dropout: 0.05
+  use_teams_embeddings: false  # ablation: train w/o team embeddings ### не понятно че это
+  position_enc_type: "learned"  # "learned" (paper default) | "sinusoidal" (BERT-style fixed)
+
+# --- Training (HuggingFace Trainer compatible) -----------------------------
+training:
+  output_dir: "outputs/mpp"
+  num_train_epochs: 2000
+  per_device_train_batch_size: 1   # each "sample" is a pre-collated batch
+  sample_batch_size: 256           # real batch size (pre-collated)
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  warmup_ratio: 0.0
+  lr_scheduler_type: "linear"
+  seed: 42
+
+  # Logging & checkpointing
+  logging_strategy: "steps"
+  logging_steps: 8550
+  evaluation_strategy: "steps"
+  eval_steps: 8550
+  save_strategy: "steps"
+  save_steps: 42750
+  report_to: "tensorboard"
