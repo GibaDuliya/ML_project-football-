@@ -33,7 +33,8 @@ class DataCollatorMPP:
         player_mask_token_id: int,
         mask_percentage: float = 0.25,
     ):
-        ...
+        self.player_mask_token_id = player_mask_token_id
+        self.mask_percentage = mask_percentage
 
     def __call__(
         self, batch: list[dict[str, torch.Tensor]]
@@ -47,7 +48,31 @@ class DataCollatorMPP:
             Dict with keys: input_ids, labels, position_id, team_id,
             form_stats, attention_mask — all batched tensors.
         """
-        ...
+        batch = [b for b in batch if b is not None]
+        if not batch:
+            raise ValueError("DataCollatorMPP received empty batch or all None items")
+
+        masked_input_ids = []
+        labels_list = []
+        masked_form_stats_list = []
+        for item in batch:
+            mid, lab, mfs = self._mask_single_match(
+                item["input_ids"],
+                item["form_stats"],
+                item["attention_mask"],
+            )
+            masked_input_ids.append(mid)
+            labels_list.append(lab)
+            masked_form_stats_list.append(mfs)
+
+        return {
+            "input_ids": torch.stack(masked_input_ids),
+            "labels": torch.stack(labels_list),
+            "position_id": torch.stack([b["position_id"] for b in batch]),
+            "team_id": torch.stack([b["team_id"] for b in batch]),
+            "form_stats": torch.stack(masked_form_stats_list),
+            "attention_mask": torch.stack([b["attention_mask"] for b in batch]),
+        }
 
     def _mask_single_match(
         self,
@@ -65,7 +90,29 @@ class DataCollatorMPP:
         Returns:
             (masked_input_ids, labels, masked_form_stats)
         """
-        ...
+        seq_len = input_ids.shape[0]
+        device = input_ids.device
+        masked_input_ids = input_ids.clone()
+        labels = torch.full((seq_len,), -100, dtype=torch.long, device=device)
+        masked_form_stats = form_stats.clone()
+
+        maskable = (attention_mask == 1).nonzero(as_tuple=True)[0]
+        n_real = len(maskable)
+        if n_real == 0:
+            return masked_input_ids, labels, masked_form_stats
+
+        n_to_mask = max(0, int(round(n_real * self.mask_percentage)))
+        if n_to_mask == 0:
+            return masked_input_ids, labels, masked_form_stats
+
+        perm = torch.randperm(n_real, device=device)
+        to_mask = maskable[perm[:n_to_mask]]
+
+        masked_input_ids[to_mask] = self.player_mask_token_id
+        labels[to_mask] = input_ids[to_mask]
+        masked_form_stats[to_mask, :] = 0.0
+
+        return masked_input_ids, labels, masked_form_stats
 
 
 class DataCollatorNMSP:

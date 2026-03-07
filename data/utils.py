@@ -22,7 +22,12 @@ def pad_sequence_1d(
     Returns:
         np.ndarray of shape (max_length,).
     """
-    ...
+    arr = np.asarray(seq)
+    if len(arr) >= max_length:
+        return arr[:max_length].copy()
+    out = np.full(max_length, pad_value, dtype=arr.dtype)
+    out[: len(arr)] = arr
+    return out
 
 
 def pad_sequence_2d(
@@ -40,7 +45,15 @@ def pad_sequence_2d(
     Returns:
         np.ndarray of shape (max_length, d).
     """
-    ...
+    arr = np.asarray(seq)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    n, d = arr.shape
+    if n >= max_length:
+        return arr[:max_length].astype(np.float32)
+    out = np.full((max_length, d), pad_value, dtype=np.float32)
+    out[:n] = arr.astype(np.float32)
+    return out
 
 
 def build_attention_mask(real_length: int, max_length: int) -> np.ndarray:
@@ -49,7 +62,9 @@ def build_attention_mask(real_length: int, max_length: int) -> np.ndarray:
     Returns:
         np.ndarray of shape (max_length,), dtype int.
     """
-    ...
+    mask = np.zeros(max_length, dtype=np.int64)
+    mask[: min(real_length, max_length)] = 1
+    return mask
 
 
 def aggregate_player_stats_for_nmsp(
