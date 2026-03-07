@@ -31,11 +31,11 @@ training:
   lr_scheduler_type: "linear"
   seed: 42
 
-  # Logging & checkpointing
+  # Logging & checkpointing (как в risingBALLER)
   logging_strategy: "steps"
-  logging_steps: 8550
-  evaluation_strategy: "steps"
-  eval_steps: 8550
+  logging_steps: 100
+  eval_strategy: "steps"
+  eval_steps: 100
   save_strategy: "steps"
   save_steps: 42750
   report_to: "tensorboard"
