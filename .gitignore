@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Data — raw and processed (too large for git)
+data/raw/
+data/processed/
+data/interim/
+data/external/
+*.csv
+*.parquet
+*.json
+*.jsonl
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+
+# Model outputs and checkpoints
+outputs/
+checkpoints/
+runs/
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# TensorBoard logs
+logs/
+tb_logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.*
