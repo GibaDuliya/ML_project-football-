@@ -8,15 +8,16 @@ mask_percentage: 0.25         # fraction of playing players to mask per match
 augmentation_repeats: 10      # how many times to re-sample masks per match ? в стаье 10 вроде ?
 dev_ratio: 0.05               # validation fraction (of augmented batches)
 
-# --- Model -----------------------------------------------------------------
+# --- Model (MaskedPlayerModel: PlayerEncoder + MPPHead) --------------------
+# num_layers = число трансформер-блоков в энкодере; остальное — размерности и регуляризация
 model:
   embed_size: 128
   num_layers: 1
   num_heads: 2
   forward_expansion: 4
   dropout: 0.05
-  use_teams_embeddings: false  # ablation: train w/o team embeddings ### не понятно че это
-  position_enc_type: "learned"  # "learned" (paper default) | "sinusoidal" (BERT-style fixed)
+  use_teams_embeddings: false  # true для основных экспериментов (статья), false для аблиации без TE
+  position_enc_type: "learned"  # "learned" (paper) | "sinusoidal" (BERT-style)
 
 # --- Training (HuggingFace Trainer compatible) -----------------------------
 training:

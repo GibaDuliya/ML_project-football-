@@ -48,9 +48,25 @@ class MaskedPlayerModel(nn.Module):
         teams_vocab_size: int = 141,
         positions_vocab_size: int = 25,
         use_teams_embeddings: bool = False,
+        position_enc_type: str = "learned",
     ):
         super().__init__()
-        ...
+        self.encoder = PlayerEncoder(
+            embed_size=embed_size,
+            num_layers=num_layers,
+            heads=heads,
+            forward_expansion=forward_expansion,
+            dropout=dropout,
+            form_stats_size=form_stats_size,
+            players_vocab_size=players_vocab_size,
+            teams_vocab_size=teams_vocab_size,
+            positions_vocab_size=positions_vocab_size,
+            use_teams_embeddings=use_teams_embeddings,
+            position_enc_type=position_enc_type,
+        )
+        # MPP head: predict among real players only (labels 0 .. n_players-1). Encoder pad_idx=players_vocab_size → n_players = players_vocab_size - 1.
+        num_player_classes = players_vocab_size - 1
+        self.head = MPPHead(embed_size=embed_size, players_vocab_size=num_player_classes)
 
     def forward(
         self,
@@ -82,8 +98,38 @@ class MaskedPlayerModel(nn.Module):
             - If tensors have an extra leading dim of 1 (from PreCollatedDataset),
               squeeze(0) is applied first.
         """
-        ...
+        if input_ids.dim() == 3:
+            input_ids = input_ids.squeeze(0)
+            labels = labels.squeeze(0)
+            position_id = position_id.squeeze(0)
+            team_id = team_id.squeeze(0)
+            form_stats = form_stats.squeeze(0)
+            attention_mask = attention_mask.squeeze(0)
+
+        hidden_states, attentions = self.encoder(
+            player_id=input_ids,
+            position_id=position_id,
+            team_id=team_id,
+            form_stats=form_stats,
+            attention_mask=attention_mask,
+        )
+        logits = self.head(hidden_states)
+
+        loss = None
+        if labels is not None:
+            loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
+            loss = loss_fct(
+                logits.view(-1, logits.size(-1)),
+                labels.view(-1),
+            )
+
+        return MaskedLMOutput(
+            loss=loss,
+            logits=logits,
+            hidden_states=hidden_states,
+            attentions=attentions,
+        )
 
     def get_encoder(self) -> PlayerEncoder:
         """Return the encoder submodule (for weight transfer to downstream)."""
-        ...
+        return self.encoder

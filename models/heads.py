@@ -20,15 +20,17 @@ class MPPHead(nn.Module):
     """Head for Masked Player Prediction.
 
     Projects each token embedding to logits over the player vocabulary.
+    Loss uses only masked positions (labels != -100); logits over real players only
+    (indices 0 .. players_vocab_size - 1), not mask/pad.
 
     Args:
         embed_size: encoder embedding dimension.
-        players_vocab_size: number of classes (unique players, excl. special tokens).
+        players_vocab_size: number of classes (unique players, excl. mask and pad).
     """
 
     def __init__(self, embed_size: int, players_vocab_size: int):
         super().__init__()
-        ...
+        self.projection = nn.Linear(embed_size, players_vocab_size)
 
     def forward(self, encoder_output: torch.Tensor) -> torch.Tensor:
         """
@@ -38,7 +40,7 @@ class MPPHead(nn.Module):
         Returns:
             logits: (batch, seq_len, players_vocab_size)
         """
-        ...
+        return self.projection(encoder_output)
 
 
 class NMSPHead(nn.Module):
