@@ -121,10 +121,11 @@ class RegressionHead(nn.Module):
     """Generic regression head.
 
     Supports per_token or per_sequence regression.
+    For rating prediction: output_dim=1, pool="per_sequence" (one scalar per sample).
 
     Args:
         embed_size: input dimension.
-        output_dim: number of regression targets.
+        output_dim: number of regression targets (e.g. 1 for overall rating).
         hidden_dim: MLP hidden size.
         pool: "per_token" or "per_sequence".
     """
@@ -137,14 +138,36 @@ class RegressionHead(nn.Module):
         pool: str = "per_sequence",
     ):
         super().__init__()
-        ...
+        self.pool = pool
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_size, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, output_dim),
+        )
 
     def forward(
         self,
         encoder_output: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        ...
+        """
+        Args:
+            encoder_output: (batch, seq_len, embed_size)
+            attention_mask: (batch, seq_len) — for per_sequence: mask padding (0) before mean.
+
+        Returns:
+            (batch, output_dim) if per_sequence else (batch, seq_len, output_dim)
+        """
+        if self.pool == "per_sequence":
+            if attention_mask is None:
+                x = encoder_output.mean(dim=1)
+            else:
+                mask = attention_mask.unsqueeze(-1).float()
+                x = (encoder_output * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
+            return self.mlp(x)
+        else:
+            return self.mlp(encoder_output)
 
 
 # ---------------------------------------------------------------------------
@@ -173,4 +196,8 @@ def build_head(head_config: dict, **kwargs) -> nn.Module:
     Raises:
         ValueError: if head_config["type"] not in HEAD_REGISTRY.
     """
-    ...
+    config = dict(head_config)
+    head_type = config.pop("type", None)
+    if head_type not in HEAD_REGISTRY:
+        raise ValueError(f"Unknown head type: {head_type}. Known: {list(HEAD_REGISTRY)}")
+    return HEAD_REGISTRY[head_type](**{**config, **kwargs})

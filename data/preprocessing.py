@@ -35,6 +35,19 @@ REQUIRED_ID_COLUMNS = [
 FORM_STATS_SIZE = 39
 PROCESSED_CSV_NAME = "processed.csv"
 
+# Order of stat columns (must match raw/processed CSV: all columns except REQUIRED_ID_COLUMNS)
+STAT_COLUMNS = [
+    "pass_total", "pass_cross", "pass_cut_back", "pass_shot_assist", "pass_goal_assist",
+    "pass_no_touch", "pass_interception", "pass_incomplete", "pass_offside", "pass_through_ball",
+    "shot_total", "shot_statsbomb_xg", "shot_corner", "shot_free_kick", "shot_open_play",
+    "shot_penalty", "shot_saved", "shot_off_target", "shot_blocked", "shot_goal",
+    "interception_total", "interception_won", "interception_lost", "block_total", "clearance_total",
+    "ball_recovery_total", "dribble_total", "dribble_complete", "dribble_incomplete",
+    "foul_won_total", "foul_won_penalty", "foul_committed_total", "foul_committed_penalty",
+    "foul_committed_yellow_card", "foul_committed_red_card",
+    "goalkeeper_goal_conceded", "goalkeeper_save", "goalkeeper_shot_faced", "counterpress_total",
+]
+
 
 # ---------------------------------------------------------------------------
 # Public API
