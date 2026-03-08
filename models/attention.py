@@ -10,16 +10,9 @@ import torch.nn as nn
 
 
 class PlayerSelfAttention(nn.Module):
-    """Multi-head self-attention implemented from scratch.
+    """Multi-head self-attention (как в risingBALLER: split → per-head Linear).
 
-    Args:
-        embed_size: total embedding dimension D.
-        heads: number of attention heads.
-
-    Shapes:
-        Input:  values, keys, queries — each (batch, seq_len, embed_size)
-                mask — (batch, 1, 1, seq_len) or None
-        Output: (batch, seq_len, embed_size), attention_matrix (batch, heads, seq_len, seq_len)
+    Сначала split по головам, затем Q/K/V — Linear(head_dim, head_dim, bias=False).
     """
 
     def __init__(self, embed_size: int, heads: int):
@@ -30,10 +23,10 @@ class PlayerSelfAttention(nn.Module):
 
         assert self.head_dim * heads == embed_size, "embed_size must be divisible by heads"
 
-        self.values = nn.Linear(embed_size, embed_size)
-        self.keys = nn.Linear(embed_size, embed_size)
-        self.queries = nn.Linear(embed_size, embed_size)
-        self.fc_out = nn.Linear(embed_size, embed_size)
+        self.values = nn.Linear(self.head_dim, self.head_dim, bias=False)
+        self.keys = nn.Linear(self.head_dim, self.head_dim, bias=False)
+        self.queries = nn.Linear(self.head_dim, self.head_dim, bias=False)
+        self.fc_out = nn.Linear(self.heads * self.head_dim, embed_size)
 
     def forward(
         self,
@@ -42,34 +35,20 @@ class PlayerSelfAttention(nn.Module):
         queries: torch.Tensor,
         mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute multi-head scaled dot-product attention.
-
-        Steps:
-            1. Linear projections Q, K, V per head.
-            2. energy = Q @ K^T / sqrt(head_dim).
-            3. Apply mask (fill -1e20 where mask==0).
-            4. attention = softmax(energy).
-            5. out = attention @ V → reshape → fc_out.
-
-        Returns:
-            (output, attention_matrix)
-        """
         N = queries.shape[0]
         value_len = values.shape[1]
         key_len = keys.shape[1]
         query_len = queries.shape[1]
 
-        # Linear projections
-        values = self.values(values)    # (N, value_len, embed_size)
-        keys = self.keys(keys)          # (N, key_len, embed_size)
-        queries = self.queries(queries) # (N, query_len, embed_size)
-
-        # Split into heads: (N, seq_len, heads, head_dim)
+        # Split into heads first (как в risingBALLER)
         values = values.reshape(N, value_len, self.heads, self.head_dim)
         keys = keys.reshape(N, key_len, self.heads, self.head_dim)
         queries = queries.reshape(N, query_len, self.heads, self.head_dim)
 
-        # energy: (N, heads, query_len, key_len)
+        values = self.values(values)
+        keys = self.keys(keys)
+        queries = self.queries(queries)
+
         energy = torch.einsum("nqhd,nkhd->nhqk", [queries, keys])
         energy = energy / (self.head_dim ** 0.5)
 
@@ -78,7 +57,6 @@ class PlayerSelfAttention(nn.Module):
 
         attention = torch.softmax(energy, dim=-1)
 
-        # out: (N, query_len, heads, head_dim) -> (N, query_len, embed_size)
         out = torch.einsum("nhql,nlhd->nqhd", [attention, values])
         out = out.reshape(N, query_len, self.heads * self.head_dim)
         out = self.fc_out(out)

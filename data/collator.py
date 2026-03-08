@@ -1,12 +1,14 @@
 """
 Data collators — applied on-the-fly during training.
 
-DataCollatorMPP  — randomly masks 25% of players in each match, zeros out
-                   their form_stats, and builds labels (-100 for unmasked).
-DataCollatorNMSP — collates NMSP batches (no masking needed).
+DataCollatorMPP      — randomly masks 25% of players in each match, zeros out
+                       their form_stats, and builds labels (-100 for unmasked).
+DataCollatorPreCollated — for PreCollatedDataset: list of one batch → batch (stack dim 0).
+DataCollatorNMSP    — collates NMSP batches (no masking needed).
 """
 
 import torch
+from torch.utils.data.dataloader import default_collate
 from typing import Optional
 
 
@@ -113,6 +115,17 @@ class DataCollatorMPP:
         masked_form_stats[to_mask, :] = 0.0
 
         return masked_input_ids, labels, masked_form_stats
+
+
+class DataCollatorPreCollated:
+    """Collator for PreCollatedDataset (repeat logic).
+
+    Each dataset item is already a full batch (e.g. 256 matches).
+    Trainer passes a list of one such batch; we stack to add batch dim for the model.
+    """
+
+    def __call__(self, batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
+        return default_collate(batch)
 
 
 class DataCollatorNMSP:
