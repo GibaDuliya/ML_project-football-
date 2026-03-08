@@ -1,1 +1,1 @@
-from .average_baseline import AverageBaseline
+from .MLP_baseline.MLP_baseline import MLPEncoder, MLPMaskedPlayerModel
