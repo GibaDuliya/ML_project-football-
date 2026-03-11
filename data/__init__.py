@@ -4,6 +4,7 @@ from .collator import DataCollatorMPP, DataCollatorNMSP, DataCollatorPreCollated
 from .sofifa import (
     load_sofifa_csv,
     normalize_player_name,
-    build_rating_splits,
-    SofifaRatingDataset,
+    build_player_id_to_overall,
+    build_aggregated_embeddings,
+    SofifaAggregatedDataset,
 )

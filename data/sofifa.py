@@ -1,10 +1,11 @@
 """
 Обработка данных SoFIFA для предсказания рейтинга (overall).
 
-- load_sofifa_csv()     — загрузка и базовая очистка CSV.
-- normalize_player_name() — нормализация имени для сопоставления с нашим словарём.
-- build_rating_splits() — сопоставление с player_name2id, разбиение на train/val.
-- SofifaRatingDataset  — PyTorch Dataset (player_id, overall) для обучения головы.
+- load_sofifa_csv() — загрузка dataset/sofifa_players.csv.
+- normalize_player_name() — нормализация имени для сопоставления со словарём.
+- build_player_id_to_overall() — player_id → overall из SoFIFA.
+- build_aggregated_embeddings() — по матчам энкодер, усреднение по (player_id, season).
+- SofifaAggregatedDataset — (mean_embedding, overall) для обучения головы.
 """
 
 import re
@@ -62,39 +63,28 @@ def normalize_player_name(name: str) -> str:
     return s
 
 
-def build_rating_splits(
+def build_player_id_to_overall(
     sofifa_df: pd.DataFrame,
     player_name2id: dict[str, int],
     *,
-    dev_ratio: float = 0.15,
-    seed: int = 42,
-    min_id: int = 0,
     max_id: Optional[int] = None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Сопоставляет игроков SoFIFA со словарём и разбивает на train/val.
-
-    Игроки, которых нет в player_name2id, отбрасываются. Не учитываются
-    специальные id (mask, pad) — задаются через max_id (например, player_pad_token_id - 1).
+) -> dict[int, float]:
+    """Строит маппинг player_id → overall для игроков, присутствующих в SoFIFA и в словаре.
 
     Args:
-        sofifa_df: DataFrame из load_sofifa_csv (колонки name, overall).
-        player_name2id: маппинг имя → id из нашего словаря.
-        dev_ratio: доля выборки для валидации.
-        seed: seed для разбиения.
-        min_id: минимальный player_id для учёта (обычно 0).
-        max_id: максимальный player_id (например, только «реальные» игроки без mask/pad).
-                 Если None, допускаются все id из словаря.
+        sofifa_df: DataFrame из load_sofifa_csv (name, overall).
+        player_name2id: словарь из метаданных MPP.
+        max_id: если задан, игнорировать player_id > max_id (mask/pad).
 
     Returns:
-        (train_df, eval_df) с колонками player_id, overall; индексы сброшены.
+        dict[player_id, overall].
     """
     normalized2id = {}
     for name, pid in player_name2id.items():
         n = normalize_player_name(name)
-        if n and pid not in (None,):
+        if n and pid is not None:
             normalized2id[n] = pid
-
-    rows = []
+    out = {}
     for _, row in sofifa_df.iterrows():
         n = normalize_player_name(row[NAME_COLUMN])
         if not n:
@@ -104,47 +94,120 @@ def build_rating_splits(
             continue
         if max_id is not None and pid > max_id:
             continue
-        if pid < min_id:
+        out[pid] = float(row[RATING_COLUMN])
+    return out
+
+
+def build_aggregated_embeddings(
+    encoder: torch.nn.Module,
+    match_dataset: Dataset,
+    match_df: pd.DataFrame,
+    player_id_to_overall: dict[int, float],
+    device: torch.device,
+    *,
+    batch_size: int = 1,
+) -> tuple[np.ndarray, pd.DataFrame]:
+    """По каждому матчу прогоняет энкодер, собирает эмбеддинги по (player_id, season_name), усредняет по сезону.
+
+    Ожидает match_dataset с __getitem__ → dict с input_ids, position_id, team_id, form_stats, attention_mask
+    (как MatchDatasetMPP, без маскирования). match_df должен содержать match_id и season_name.
+
+    Returns:
+        embeddings: (N, embed_size) float32 — усреднённые эмбеддинги по (player_id, season).
+        meta: DataFrame с колонками player_id, season_name, overall (N строк, порядок как в embeddings).
+        Только игроки из player_id_to_overall; без overall отбрасываются.
+    """
+    encoder.eval()
+    encoder.to(device)
+    match_ids = getattr(match_dataset, "_match_ids", None)
+    if match_ids is None:
+        raise ValueError("match_dataset must have _match_ids (e.g. MatchDatasetMPP)")
+
+    # Собираем (player_id, season_name, embedding) по всем матчам
+    list_player_season_emb: list[tuple[int, str, np.ndarray]] = []
+    embed_size = None
+
+    for idx in range(len(match_dataset)):
+        batch = match_dataset[idx]
+        if batch is None:
             continue
-        rows.append({"player_id": pid, RATING_COLUMN: row[RATING_COLUMN]})
+        match_id = match_ids[idx]
+        seasons = match_df.loc[match_df["match_id"] == match_id, "season_name"]
+        if len(seasons) == 0:
+            continue
+        season_name = str(seasons.iloc[0])
 
-    if not rows:
-        return pd.DataFrame(columns=["player_id", RATING_COLUMN]), pd.DataFrame(columns=["player_id", RATING_COLUMN])
+        input_ids = batch["input_ids"].unsqueeze(0).to(device)
+        position_id = batch["position_id"].unsqueeze(0).to(device)
+        team_id = batch["team_id"].unsqueeze(0).to(device)
+        form_stats = batch["form_stats"].unsqueeze(0).to(device)
+        attention_mask = batch["attention_mask"].unsqueeze(0).to(device)
 
-    df = pd.DataFrame(rows)
-    df = df.drop_duplicates(subset=["player_id"], keep="first")
+        with torch.no_grad():
+            enc_out, _ = encoder(input_ids, position_id, team_id, form_stats, attention_mask)
+        # enc_out (1, seq_len, embed_size)
+        if embed_size is None:
+            embed_size = enc_out.shape[-1]
+        seq_len = enc_out.shape[1]
+        mask = batch["attention_mask"]
+        ids = batch["input_ids"]
+        for i in range(seq_len):
+            if mask[i].item() != 1:
+                continue
+            pid = ids[i].item()
+            emb = enc_out[0, i].cpu().numpy().astype(np.float32)
+            list_player_season_emb.append((pid, season_name, emb))
 
-    n = len(df)
-    n_dev = max(1, int(n * dev_ratio))
-    rng = np.random.default_rng(seed)
-    idx = rng.permutation(n)
-    dev_idx = idx[:n_dev]
-    train_idx = idx[n_dev:]
+    if not list_player_season_emb:
+        return np.zeros((0, embed_size or 1), dtype=np.float32), pd.DataFrame(
+            columns=["player_id", "season_name", "overall"]
+        )
 
-    train_df = df.iloc[train_idx].reset_index(drop=True)
-    eval_df = df.iloc[dev_idx].reset_index(drop=True)
-    return train_df, eval_df
+    # Группируем по (player_id, season_name), усредняем
+    from collections import defaultdict
+    agg: dict[tuple[int, str], list[np.ndarray]] = defaultdict(list)
+    for pid, season, emb in list_player_season_emb:
+        agg[(pid, season)].append(emb)
+    mean_embeddings = []
+    meta_rows = []
+    for (pid, season), embs in sorted(agg.items()):
+        overall = player_id_to_overall.get(pid)
+        if overall is None:
+            continue
+        mean_emb = np.stack(embs, axis=0).mean(axis=0)
+        mean_embeddings.append(mean_emb)
+        meta_rows.append({"player_id": pid, "season_name": season, "overall": overall})
+
+    if not mean_embeddings:
+        return np.zeros((0, embed_size), dtype=np.float32), pd.DataFrame(
+            columns=["player_id", "season_name", "overall"]
+        )
+    embeddings = np.stack(mean_embeddings, axis=0)
+    meta = pd.DataFrame(meta_rows)
+    return embeddings, meta
 
 
-class SofifaRatingDataset(Dataset):
-    """Dataset для предсказания рейтинга по player_id.
+class SofifaAggregatedDataset(Dataset):
+    """Датасет для задачи 2: усреднённый по сезону эмбеддинг → overall.
 
-    Возвращает (player_id, overall). Эмбеддинг берётся из encoder.players_embeddings(player_id)
-    при forward; здесь только пары для обучения головы.
-
-    Args:
-        df: DataFrame с колонками player_id, overall (из build_rating_splits).
+    Возвращает (aggregated_embedding, overall). Голова получает уже один вектор на сэмпл.
     """
 
-    def __init__(self, df: pd.DataFrame):
-        self.df = df.reset_index(drop=True)
+    def __init__(self, embeddings: np.ndarray, meta: pd.DataFrame):
+        """
+        Args:
+            embeddings: (N, embed_size) float32.
+            meta: DataFrame с колонкой overall (N строк), порядок как в embeddings.
+        """
+        assert len(meta) == len(embeddings)
+        self.embeddings = embeddings
+        self.meta = meta.reset_index(drop=True)
 
     def __len__(self) -> int:
-        return len(self.df)
+        return len(self.meta)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        row = self.df.iloc[idx]
         return {
-            "player_id": torch.tensor(row["player_id"], dtype=torch.long),
-            "overall": torch.tensor(row["overall"], dtype=torch.float32),
+            "aggregated_embedding": torch.from_numpy(self.embeddings[idx].copy()),
+            "overall": torch.tensor(self.meta.iloc[idx]["overall"], dtype=torch.float32),
         }
