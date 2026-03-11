@@ -108,7 +108,15 @@ class NMSPHead(nn.Module):
         hidden_dim: int = 512,
     ):
         super().__init__()
-        ...
+        self.max_seq_length = max_seq_length
+        self.num_target_stats = num_target_stats
+        flat_size = max_seq_length * embed_size
+        self.mlp = nn.Sequential(
+            nn.Linear(flat_size, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, 2 * num_target_stats),
+        )
 
     def forward(self, encoder_output: torch.Tensor) -> torch.Tensor:
         """
@@ -118,7 +126,9 @@ class NMSPHead(nn.Module):
         Returns:
             predictions: (batch, 2 * num_target_stats)
         """
-        ...
+        b, s, e = encoder_output.shape
+        x = encoder_output.reshape(b, s * e)
+        return self.mlp(x)
 
 
 class ClassificationHead(nn.Module):
