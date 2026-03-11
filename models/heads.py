@@ -12,6 +12,8 @@ RegressionHead      — Generic regression head.
 build_head()        — factory function: config dict → Head instance.
 """
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
@@ -41,6 +43,48 @@ class MPPHead(nn.Module):
             logits: (batch, seq_len, players_vocab_size)
         """
         return self.projection(encoder_output)
+
+
+class StatsPredictionHead(nn.Module):
+    """Head for predicting 39 player statistics from encoder embeddings.
+
+    Input: embeddings after the transformer block (batch, seq_len, embed_size).
+    Output: per-token regression to 39 stats (batch, seq_len, num_stats).
+    Loss: MSE (or L1) only on non-padded positions (attention_mask).
+
+    Args:
+        embed_size: encoder embedding dimension.
+        num_stats: number of stat targets (default 39).
+        hidden_dim: optional hidden size for MLP; if 0 or None, use single Linear.
+    """
+
+    def __init__(
+        self,
+        embed_size: int,
+        num_stats: int = 39,
+        hidden_dim: Optional[int] = 256,
+    ):
+        super().__init__()
+        self.num_stats = num_stats
+        if hidden_dim and hidden_dim > 0:
+            self.mlp = nn.Sequential(
+                nn.Linear(embed_size, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(hidden_dim, num_stats),
+            )
+        else:
+            self.mlp = nn.Linear(embed_size, num_stats)
+
+    def forward(self, encoder_output: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            encoder_output: (batch, seq_len, embed_size)
+
+        Returns:
+            predictions: (batch, seq_len, num_stats)
+        """
+        return self.mlp(encoder_output)
 
 
 class NMSPHead(nn.Module):
@@ -177,6 +221,7 @@ class RegressionHead(nn.Module):
 HEAD_REGISTRY = {
     "mpp": MPPHead,
     "nmsp": NMSPHead,
+    "stats_prediction": StatsPredictionHead,
     "classification": ClassificationHead,
     "regression": RegressionHead,
 }

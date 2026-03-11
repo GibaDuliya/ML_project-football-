@@ -1,1 +1,1 @@
-from .average_baseline import AverageBaseline
+from .average_baseline import AverageBaseline, compute_stats_baseline_mse_per_stat
