@@ -64,7 +64,17 @@ class NMSPHead(nn.Module):
         hidden_dim: int = 512,
     ):
         super().__init__()
-        ...
+        self.max_seq_length = max_seq_length
+        self.num_target_stats = num_target_stats
+
+        input_dim = max_seq_length * embed_size
+        output_dim = 2 * num_target_stats
+
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, output_dim),
+        )
 
     def forward(self, encoder_output: torch.Tensor) -> torch.Tensor:
         """
@@ -74,7 +84,9 @@ class NMSPHead(nn.Module):
         Returns:
             predictions: (batch, 2 * num_target_stats)
         """
-        ...
+        batch_size = encoder_output.shape[0]
+        x = encoder_output.reshape(batch_size, -1)
+        return self.mlp(x)
 
 
 class ClassificationHead(nn.Module):
@@ -160,17 +172,14 @@ HEAD_REGISTRY = {
 
 
 def build_head(head_config: dict, **kwargs) -> nn.Module:
-    """Instantiate a head from a config dict.
+    """Instantiate a head from a config dict."""
+    head_type = head_config.get("type")
+    if head_type not in HEAD_REGISTRY:
+        raise ValueError(f"Unknown head type: {head_type}")
 
-    Args:
-        head_config: dict with at least {"type": "<name>"} plus head-specific params.
-        **kwargs: additional keyword args forwarded to the head constructor
-                  (e.g. embed_size, players_vocab_size).
+    head_cls = HEAD_REGISTRY[head_type]
 
-    Returns:
-        nn.Module — the constructed head.
+    config = {k: v for k, v in head_config.items() if k != "type"}
+    config.update(kwargs)
 
-    Raises:
-        ValueError: if head_config["type"] not in HEAD_REGISTRY.
-    """
-    ...
+    return head_cls(**config)

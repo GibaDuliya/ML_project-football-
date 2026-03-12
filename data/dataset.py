@@ -136,13 +136,8 @@ class MatchDatasetNMSP(Dataset):
         input tensors  — same as MatchDatasetMPP (but with aggregated TPE)
         target_stats   — FloatTensor (2 * num_target_stats,) — targets for both teams
 
-    For NMSP, the temporal positional encoding (form_stats) uses 234
-    aggregated variables instead of 39 raw counts.
-
-    Args:
-        df: preprocessed DataFrame with aggregated stats.
-        target_columns: list of stat column names to predict.
-        (... same args as MatchDatasetMPP ...)
+    For NMSP, the temporal positional encoding (form_stats) uses aggregated
+    variables instead of raw per-match counts.
     """
 
     def __init__(
@@ -157,14 +152,85 @@ class MatchDatasetNMSP(Dataset):
         position_pad_token_id: int = 25,
         id_columns: Optional[list[str]] = None,
     ):
-        ...
+        self.df = df.reset_index(drop=True)
+        self.target_columns = target_columns
+        self.player_name2id = player_name2id
+        self.team_name2id = team_name2id
+        self.max_seq_length = max_seq_length
+        self.player_pad_token_id = player_pad_token_id
+        self.team_pad_token_id = team_pad_token_id
+        self.position_pad_token_id = position_pad_token_id
+        self.id_columns = id_columns if id_columns is not None else REQUIRED_ID_COLUMNS
+
+        self.stat_columns = [
+            c for c in self.df.columns
+            if c not in self.id_columns and c not in self.target_columns
+        ]
+        self.form_stats_size = len(self.stat_columns)
+        self._match_ids = self.df["match_id"].drop_duplicates().tolist()
 
     def __len__(self) -> int:
-        ...
+        return len(self._match_ids)
 
     def __getitem__(self, idx: int) -> Optional[dict[str, torch.Tensor]]:
-        """Return input tensors + target_stats for match idx."""
-        ...
+        match_id = self._match_ids[idx]
+        rows = self.df[self.df["match_id"] == match_id]
+
+        teams = rows["team_name"].unique()
+        if len(teams) != 2:
+            return None
+
+        team_a, team_b = sorted(teams)
+        rows_a = rows[rows["team_name"] == team_a]
+        rows_b = rows[rows["team_name"] == team_b]
+        rows_ordered = pd.concat([rows_a, rows_b], ignore_index=True)
+
+        n_players = len(rows_ordered)
+
+        player_ids = []
+        team_ids = []
+        position_ids = []
+
+        for _, row in rows_ordered.iterrows():
+            player_ids.append(
+                self.player_name2id.get(row["player_name"], self.player_pad_token_id)
+            )
+            team_ids.append(
+                self.team_name2id.get(row["team_name"], self.team_pad_token_id)
+            )
+            pos_id = int(row["position_id"])
+            position_ids.append(
+                pos_id - 1 if 1 <= pos_id <= 25 else self.position_pad_token_id
+            )
+
+        form_stats = rows_ordered[self.stat_columns].values.astype(np.float32)
+
+        team_a_target = rows_a[self.target_columns].sum().values.astype(np.float32)
+        team_b_target = rows_b[self.target_columns].sum().values.astype(np.float32)
+        target_stats = np.concatenate([team_a_target, team_b_target], axis=0)
+
+        player_ids = pad_sequence_1d(
+            player_ids, self.max_seq_length, pad_value=self.player_pad_token_id
+        )
+        team_ids = pad_sequence_1d(
+            team_ids, self.max_seq_length, pad_value=self.team_pad_token_id
+        )
+        position_ids = pad_sequence_1d(
+            position_ids, self.max_seq_length, pad_value=self.position_pad_token_id
+        )
+        form_stats = pad_sequence_2d(
+            form_stats, self.max_seq_length, pad_value=0.0
+        )
+        attention_mask = build_attention_mask(n_players, self.max_seq_length)
+
+        return {
+            "input_ids": torch.from_numpy(player_ids).long(),
+            "position_id": torch.from_numpy(position_ids).long(),
+            "team_id": torch.from_numpy(team_ids).long(),
+            "form_stats": torch.from_numpy(form_stats).float(),
+            "attention_mask": torch.from_numpy(attention_mask).long(),
+            "target_stats": torch.from_numpy(target_stats).float(),
+        }
 
 
 class PreCollatedDataset(Dataset):

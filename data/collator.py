@@ -137,4 +137,7 @@ class DataCollatorNMSP:
     def __call__(
         self, batch: list[Optional[dict[str, torch.Tensor]]]
     ) -> dict[str, torch.Tensor]:
-        ...
+        batch = [b for b in batch if b is not None]
+        if not batch:
+            raise ValueError("DataCollatorNMSP received empty batch or all None items")
+        return default_collate(batch)
