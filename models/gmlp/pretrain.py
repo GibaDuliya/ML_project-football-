@@ -1,70 +1,61 @@
 """
-MaskedPlayerModel — full model for MPP pre-training.
+gMLPMaskedPlayerModel — full model for MPP pre-training with gMLP encoder.
 
-Combines PlayerEncoder + MPPHead + CrossEntropyLoss.
-Returns HuggingFace-compatible MaskedLMOutput for use with HF Trainer.
+Combines gMLPEncoder + MPPHead + CrossEntropyLoss.
+Returns HuggingFace-compatible MaskedLMOutput.
 """
 
 import torch
 import torch.nn as nn
 from transformers.modeling_outputs import MaskedLMOutput
 
-from .transformer.encoder import PlayerEncoder
-from .heads import MPPHead
+from .encoder import gMLPEncoder
+from ..heads import MPPHead
 
 
-class MaskedPlayerModel(nn.Module):
-    """RisingBALLER pre-training model for Masked Player Prediction.
+class gMLPMaskedPlayerModel(nn.Module):
+    """gMLP pre-training model for Masked Player Prediction.
 
     Architecture:
-        PlayerEncoder → MPPHead (Linear → logits over player vocab)
+        gMLPEncoder → MPPHead (Linear → logits over player vocab)
         Loss: CrossEntropyLoss(ignore_index=-100)
-
-    The model outputs MaskedLMOutput so it integrates with HuggingFace Trainer
-    (automatic loss handling, logging, checkpointing).
 
     Args:
         embed_size: embedding dimension.
-        num_layers: number of transformer blocks.
-        heads: number of attention heads.
-        forward_expansion: FFN expansion factor.
+        num_layers: number of gMLP blocks.
+        d_ffn: hidden FFN dimension (None = 4 * embed_size).
         dropout: dropout rate.
         form_stats_size: input stat vector dimension (39).
-        players_vocab_size: total unique players (decoder output size).
+        players_vocab_size: total unique players.
         teams_vocab_size: total unique teams.
-        positions_vocab_size: total unique positions (25).
         use_teams_embeddings: include team affiliation embeddings.
+        seq_len: fixed sequence length for gMLP (default 50).
     """
 
     def __init__(
         self,
         embed_size: int = 128,
-        num_layers: int = 1,
-        heads: int = 2,
-        forward_expansion: int = 4,
+        num_layers: int = 2,
+        d_ffn: int | None = None,
         dropout: float = 0.05,
         form_stats_size: int = 39,
         players_vocab_size: int = 5107,
         teams_vocab_size: int = 141,
-        positions_vocab_size: int = 25,
         use_teams_embeddings: bool = False,
-        position_enc_type: str = "learned",
+        seq_len: int = 50,
     ):
         super().__init__()
-        self.encoder = PlayerEncoder(
+        self.encoder = gMLPEncoder(
             embed_size=embed_size,
             num_layers=num_layers,
-            heads=heads,
-            forward_expansion=forward_expansion,
+            d_ffn=d_ffn,
             dropout=dropout,
             form_stats_size=form_stats_size,
             players_vocab_size=players_vocab_size,
             teams_vocab_size=teams_vocab_size,
-            positions_vocab_size=positions_vocab_size,
             use_teams_embeddings=use_teams_embeddings,
-            position_enc_type=position_enc_type,
+            seq_len=seq_len,
         )
-        # MPP head: predict among real players only (labels 0 .. n_players-1). Encoder pad_idx=players_vocab_size → n_players = players_vocab_size - 1.
         num_player_classes = players_vocab_size - 1
         self.head = MPPHead(embed_size=embed_size, players_vocab_size=num_player_classes)
 
@@ -80,23 +71,15 @@ class MaskedPlayerModel(nn.Module):
         """Forward pass for MPP.
 
         Args:
-            input_ids:      (batch, seq_len)             — player IDs with [MASK] tokens.
-            labels:         (batch, seq_len)             — target player IDs; -100 for non-masked.
+            input_ids:      (batch, seq_len)
+            labels:         (batch, seq_len) — target player IDs; -100 for non-masked.
             position_id:    (batch, seq_len)
             team_id:        (batch, seq_len)
             form_stats:     (batch, seq_len, stats_dim)
             attention_mask: (batch, seq_len)
 
         Returns:
-            MaskedLMOutput with:
-                loss:           scalar CrossEntropy loss (only over masked positions).
-                logits:         (batch, seq_len, players_vocab_size)
-                hidden_states:  (batch, seq_len, embed_size) — encoder output.
-                attentions:     list of attention matrices per layer.
-
-        Notes:
-            - If tensors have an extra leading dim of 1 (from PreCollatedDataset),
-              squeeze(0) is applied first.
+            MaskedLMOutput with loss, logits, hidden_states, attentions.
         """
         if input_ids.dim() == 3:
             input_ids = input_ids.squeeze(0)
@@ -130,6 +113,5 @@ class MaskedPlayerModel(nn.Module):
             attentions=attentions,
         )
 
-    def get_encoder(self) -> PlayerEncoder:
-        """Return the encoder submodule (for weight transfer to downstream)."""
+    def get_encoder(self) -> gMLPEncoder:
         return self.encoder

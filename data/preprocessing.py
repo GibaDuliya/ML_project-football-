@@ -62,7 +62,7 @@ def preprocess_raw_csv(
         raise FileNotFoundError(f"Raw CSV not found: {csv_path}")
 
     df = pd.read_csv(path)
-    _validate_columns(df)
+    _validate_columns(df) 
 
     # Optional filters
     if seasons is not None:

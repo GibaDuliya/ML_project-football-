@@ -3,15 +3,15 @@ Run MPP (Masked Player Prediction) training for any compatible model.
 
 Supports:
     - Main transformer model (models.pretrain.MaskedPlayerModel)
-    - MLP baseline (baselines.MLP_baseline.MLP_baseline.MLPMaskedPlayerModel)
+    - gMLP model (models.gmlp.pretrain.gMLPMaskedPlayerModel)
 
 Usage examples:
     # Train main transformer model
     python run/run_mpp.py --data dataset/data_with_dates.csv --output outputs/mpp_main
 
-    # Train MLP baseline
-    python run/run_mpp.py --data dataset/data_with_dates.csv --output outputs/mpp_mlp \
-        --model mlp_baseline --mlp_num_layers 2 --mlp_hidden_mult 4
+    # Train gMLP model
+    python run/run_mpp.py --data dataset/data_with_dates.csv --output outputs/mpp_gmlp \
+        --model gmlp --num_layers 2 --d_ffn 416 --precollate --precollate_repeat 10
 
     # Small test run
     python run/run_mpp.py --data dataset/data_with_dates.csv --output outputs/mpp_test \
@@ -34,7 +34,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data.preprocessing import preprocess_raw_csv, build_vocab_mappings
-from data.dataset import MatchDatasetMPP, PreCollatedDataset
+from data.dataset import MatchDatasetMPP, MatchDatasetGMLP_MPP, PreCollatedDataset
 from data.collator import DataCollatorMPP, DataCollatorPreCollated
 from training.trainer import build_training_args, build_trainer
 from training.metrics import compute_metrics_mpp
@@ -53,7 +53,7 @@ def parse_args():
 
     # Model selection
     p.add_argument("--model", type=str, default="transformer",
-                    choices=["transformer", "mlp_baseline"],
+                    choices=["transformer", "gmlp"],
                     help="Model architecture to train")
 
     # Common model hyperparameters
@@ -67,11 +67,9 @@ def parse_args():
     p.add_argument("--position_enc_type", type=str, default="learned",
                     choices=["learned", "sinusoidal"])
 
-    # MLP baseline specific
-    p.add_argument("--mlp_num_layers", type=int, default=None,
-                    help="Number of MLP blocks (overrides --num_layers for mlp_baseline)")
-    p.add_argument("--mlp_hidden_mult", type=int, default=4,
-                    help="Hidden dim multiplier for MLP blocks")
+    # gMLP specific
+    p.add_argument("--d_ffn", type=int, default=None,
+                    help="FFN hidden dim for gMLP blocks (default: 4 * embed_size)")
 
     # Data pipeline
     p.add_argument("--max_seq_length", type=int, default=36)
@@ -120,17 +118,32 @@ def load_data(args):
     return df, vocab
 
 
+def _build_dataset(df, vocab, args):
+    """Instantiate the right dataset class based on --model."""
+    if args.model == "gmlp":
+        return MatchDatasetGMLP_MPP(
+            df,
+            player_name2id=vocab["player_name2id"],
+            team_name2id=vocab["team_name2id"],
+            player_pad_token_id=vocab["player_pad_token_id"],
+            team_pad_token_id=vocab["team_pad_token_id"],
+            position_pad_token_id=25,
+        )
+    else:
+        return MatchDatasetMPP(
+            df,
+            player_name2id=vocab["player_name2id"],
+            team_name2id=vocab["team_name2id"],
+            max_seq_length=args.max_seq_length,
+            player_pad_token_id=vocab["player_pad_token_id"],
+            team_pad_token_id=vocab["team_pad_token_id"],
+            position_pad_token_id=25,
+        )
+
+
 def build_datasets_direct(df, vocab, args):
     """Build train/eval datasets with on-the-fly masking (DataCollatorMPP)."""
-    ds_full = MatchDatasetMPP(
-        df,
-        player_name2id=vocab["player_name2id"],
-        team_name2id=vocab["team_name2id"],
-        max_seq_length=args.max_seq_length,
-        player_pad_token_id=vocab["player_pad_token_id"],
-        team_pad_token_id=vocab["team_pad_token_id"],
-        position_pad_token_id=25,
-    )
+    ds_full = _build_dataset(df, vocab, args)
 
     n = len(ds_full)
     n_val = max(1, int(n * args.dev_ratio))
@@ -155,15 +168,7 @@ def build_datasets_direct(df, vocab, args):
 
 def build_datasets_precollated(df, vocab, args):
     """Build pre-collated train/eval datasets (kaggle approach)."""
-    ds_full = MatchDatasetMPP(
-        df,
-        player_name2id=vocab["player_name2id"],
-        team_name2id=vocab["team_name2id"],
-        max_seq_length=args.max_seq_length,
-        player_pad_token_id=vocab["player_pad_token_id"],
-        team_pad_token_id=vocab["team_pad_token_id"],
-        position_pad_token_id=25,
-    )
+    ds_full = _build_dataset(df, vocab, args)
 
     collator = DataCollatorMPP(
         player_mask_token_id=vocab["player_mask_token_id"],
@@ -224,20 +229,18 @@ def build_model(args, vocab):
             use_teams_embeddings=args.use_teams_embeddings,
             position_enc_type=args.position_enc_type,
         )
-    elif args.model == "mlp_baseline":
-        from baselines.MLP_baseline.MLP_baseline import MLPMaskedPlayerModel
-        mlp_layers = args.mlp_num_layers if args.mlp_num_layers is not None else args.num_layers
-        model = MLPMaskedPlayerModel(
+    elif args.model == "gmlp":
+        from models.gmlp.pretrain import gMLPMaskedPlayerModel
+        model = gMLPMaskedPlayerModel(
             embed_size=args.embed_size,
-            num_layers=mlp_layers,
-            forward_expansion=args.mlp_hidden_mult,
+            num_layers=args.num_layers,
+            d_ffn=getattr(args, "d_ffn", None),
             dropout=args.dropout,
             form_stats_size=39,
             players_vocab_size=players_vocab_size,
             teams_vocab_size=teams_vocab_size,
-            positions_vocab_size=25,
             use_teams_embeddings=args.use_teams_embeddings,
-            position_enc_type=args.position_enc_type,
+            seq_len=50,
         )
     else:
         raise ValueError(f"Unknown model: {args.model}")

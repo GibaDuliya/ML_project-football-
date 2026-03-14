@@ -9,8 +9,8 @@ import torch
 import torch.nn as nn
 from typing import Optional
 
-from .encoder import PlayerEncoder
-from .heads import build_head ###
+from .transformer.encoder import PlayerEncoder
+from .heads import build_head
 
 
 class DownstreamModel(nn.Module):
