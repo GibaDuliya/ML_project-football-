@@ -187,6 +187,116 @@ def build_aggregated_embeddings(
     return embeddings, meta
 
 
+def season_to_rating_year(season_name: str) -> Optional[int]:
+    """Сезон матча → год рейтинга (следующий год). 2016/2017 -> 2017, 2018 -> 2019."""
+    if pd.isna(season_name) or not str(season_name).strip():
+        return None
+    s = str(season_name).strip()
+    if "/" in s:
+        parts = s.split("/")
+        if len(parts) == 2 and parts[1].isdigit():
+            return int(parts[1])
+    if s.isdigit():
+        return int(s) + 1
+    return None
+
+
+def build_per_match_embeddings_next_year(
+    encoder: torch.nn.Module,
+    match_dataset: Dataset,
+    match_df: pd.DataFrame,
+    ratings_by_season_df: pd.DataFrame,
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Эмбеддинг игрока в матче → таргет: рейтинг SoFIFA в следующем году после сезона.
+
+    По каждому матчу прогоняет энкодер; для каждой позиции (игрока) с маской 1 берёт
+    эмбеддинг и ищет в ratings_by_season (player_name, rating_year) overall.
+    rating_year = season_to_rating_year(season_name) матча.
+
+    Args:
+        encoder: обученный энкодер, будет в eval.
+        match_dataset: MatchDatasetMPP (или с _match_ids и __getitem__ как там).
+        match_df: DataFrame с match_id, player_name, season_name; порядок строк по матчу
+                  должен совпадать с порядком в match_dataset (team_a, team_b).
+        ratings_by_season_df: колонки player_name, rating_year, overall (без NaN по overall).
+        device: для forward.
+
+    Returns:
+        embeddings: (N, embed_size) float32.
+        overalls: (N,) float32 — таргеты.
+        player_names: list[str] длины N — имя игрока для каждой строки (для таблицы).
+    """
+    encoder.eval()
+    encoder.to(device)
+    match_ids = getattr(match_dataset, "_match_ids", None)
+    if match_ids is None:
+        raise ValueError("match_dataset must have _match_ids (e.g. MatchDatasetMPP)")
+
+    ratings = ratings_by_season_df.dropna(subset=["overall"])
+    ratings["overall"] = ratings["overall"].astype(np.float32)
+    ratings["name_norm"] = ratings["player_name"].astype(str).map(normalize_player_name)
+    lookup: dict[tuple[str, int], float] = {}
+    for _, row in ratings.iterrows():
+        key = (row["name_norm"], int(row["rating_year"]))
+        lookup[key] = row["overall"]
+
+    list_emb: list[np.ndarray] = []
+    list_overall: list[float] = []
+    list_names: list[str] = []
+    embed_size = None
+
+    for idx in range(len(match_dataset)):
+        batch = match_dataset[idx]
+        if batch is None:
+            continue
+        match_id = match_ids[idx]
+        rows = match_df[match_df["match_id"] == match_id]
+        if len(rows) == 0:
+            continue
+        teams = rows["team_name"].unique()
+        if len(teams) != 2:
+            continue
+        team_a, team_b = sorted(teams)
+        rows_a = rows[rows["team_name"] == team_a]
+        rows_b = rows[rows["team_name"] == team_b]
+        rows_ordered = pd.concat([rows_a, rows_b], ignore_index=True)
+        season_name = str(rows_ordered.iloc[0]["season_name"])
+        rating_year = season_to_rating_year(season_name)
+        if rating_year is None:
+            continue
+
+        input_ids = batch["input_ids"].unsqueeze(0).to(device)
+        position_id = batch["position_id"].unsqueeze(0).to(device)
+        team_id = batch["team_id"].unsqueeze(0).to(device)
+        form_stats = batch["form_stats"].unsqueeze(0).to(device)
+        attention_mask = batch["attention_mask"].unsqueeze(0).to(device)
+
+        with torch.no_grad():
+            enc_out, _ = encoder(input_ids, position_id, team_id, form_stats, attention_mask)
+        if embed_size is None:
+            embed_size = enc_out.shape[-1]
+        seq_len = enc_out.shape[1]
+        mask = batch["attention_mask"]
+        for i in range(min(seq_len, len(rows_ordered))):
+            if mask[i].item() != 1:
+                continue
+            player_name = rows_ordered.iloc[i]["player_name"]
+            name_norm = normalize_player_name(str(player_name))
+            key = (name_norm, rating_year)
+            overall = lookup.get(key)
+            if overall is None:
+                continue
+            emb = enc_out[0, i].cpu().numpy().astype(np.float32)
+            list_emb.append(emb)
+            list_overall.append(overall)
+            list_names.append(str(player_name))
+
+    if not list_emb:
+        return np.zeros((0, embed_size or 1), dtype=np.float32), np.zeros(0, dtype=np.float32), []
+    return np.stack(list_emb, axis=0), np.array(list_overall, dtype=np.float32), list_names
+
+
 class SofifaAggregatedDataset(Dataset):
     """Датасет для задачи 2: усреднённый по сезону эмбеддинг → overall.
 
