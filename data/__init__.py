@@ -7,6 +7,7 @@ from .sofifa import (
     build_player_id_to_overall,
     build_aggregated_embeddings,
     build_per_match_embeddings_next_year,
+    build_aggregated_embeddings_next_year,
     season_to_rating_year,
     SofifaAggregatedDataset,
 )

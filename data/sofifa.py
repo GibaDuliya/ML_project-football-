@@ -5,6 +5,7 @@
 - normalize_player_name() — нормализация имени для сопоставления со словарём.
 - build_player_id_to_overall() — player_id → overall из SoFIFA.
 - build_aggregated_embeddings() — по матчам энкодер, усреднение по (player_id, season).
+- build_aggregated_embeddings_next_year() — то же с таргетом «рейтинг на следующий год» по (player, season).
 - SofifaAggregatedDataset — (mean_embedding, overall) для обучения головы.
 """
 
@@ -295,6 +296,106 @@ def build_per_match_embeddings_next_year(
     if not list_emb:
         return np.zeros((0, embed_size or 1), dtype=np.float32), np.zeros(0, dtype=np.float32), []
     return np.stack(list_emb, axis=0), np.array(list_overall, dtype=np.float32), list_names
+
+
+def build_aggregated_embeddings_next_year(
+    encoder: torch.nn.Module,
+    match_dataset: Dataset,
+    match_df: pd.DataFrame,
+    ratings_by_season_df: pd.DataFrame,
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Усреднённый по (игрок, сезон) эмбеддинг → таргет: рейтинг SoFIFA в следующем году после сезона.
+
+    По каждому матчу прогоняет энкодер; для каждого игрока с маской 1 берёт эмбеддинг и таргет (next year).
+    Группирует по (player_name, season_name), усредняет эмбеддинги; один overall на группу.
+
+    Returns:
+        embeddings: (N, embed_size) float32 — по одному на (player, season).
+        overalls: (N,) float32.
+        player_names: list[str] длины N.
+    """
+    encoder.eval()
+    encoder.to(device)
+    match_ids = getattr(match_dataset, "_match_ids", None)
+    if match_ids is None:
+        raise ValueError("match_dataset must have _match_ids (e.g. MatchDatasetMPP)")
+
+    ratings = ratings_by_season_df.dropna(subset=["overall"])
+    ratings["overall"] = ratings["overall"].astype(np.float32)
+    ratings["name_norm"] = ratings["player_name"].astype(str).map(normalize_player_name)
+    lookup: dict[tuple[str, int], float] = {}
+    for _, row in ratings.iterrows():
+        key = (row["name_norm"], int(row["rating_year"]))
+        lookup[key] = row["overall"]
+
+    from collections import defaultdict
+    agg: dict[tuple[str, str], list[np.ndarray]] = defaultdict(list)
+    embed_size = None
+
+    for idx in range(len(match_dataset)):
+        batch = match_dataset[idx]
+        if batch is None:
+            continue
+        match_id = match_ids[idx]
+        rows = match_df[match_df["match_id"] == match_id]
+        if len(rows) == 0:
+            continue
+        teams = rows["team_name"].unique()
+        if len(teams) != 2:
+            continue
+        team_a, team_b = sorted(teams)
+        rows_a = rows[rows["team_name"] == team_a]
+        rows_b = rows[rows["team_name"] == team_b]
+        rows_ordered = pd.concat([rows_a, rows_b], ignore_index=True)
+        season_name = str(rows_ordered.iloc[0]["season_name"])
+        rating_year = season_to_rating_year(season_name)
+        if rating_year is None:
+            continue
+
+        input_ids = batch["input_ids"].unsqueeze(0).to(device)
+        position_id = batch["position_id"].unsqueeze(0).to(device)
+        team_id = batch["team_id"].unsqueeze(0).to(device)
+        form_stats = batch["form_stats"].unsqueeze(0).to(device)
+        attention_mask = batch["attention_mask"].unsqueeze(0).to(device)
+
+        with torch.no_grad():
+            enc_out, _ = encoder(input_ids, position_id, team_id, form_stats, attention_mask)
+        if embed_size is None:
+            embed_size = enc_out.shape[-1]
+        seq_len = enc_out.shape[1]
+        mask = batch["attention_mask"]
+        for i in range(min(seq_len, len(rows_ordered))):
+            if mask[i].item() != 1:
+                continue
+            player_name = rows_ordered.iloc[i]["player_name"]
+            name_norm = normalize_player_name(str(player_name))
+            key = (name_norm, rating_year)
+            overall = lookup.get(key)
+            if overall is None:
+                continue
+            emb = enc_out[0, i].cpu().numpy().astype(np.float32)
+            group_key = (str(player_name), season_name)
+            agg[group_key].append((emb, overall))
+
+    if not agg:
+        return np.zeros((0, embed_size or 1), dtype=np.float32), np.zeros(0, dtype=np.float32), []
+
+    mean_embeddings = []
+    overalls_list = []
+    names_list = []
+    for (player_name, _season), pairs in sorted(agg.items()):
+        embs = [p[0] for p in pairs]
+        overall = pairs[0][1]
+        mean_embeddings.append(np.stack(embs, axis=0).mean(axis=0))
+        overalls_list.append(overall)
+        names_list.append(player_name)
+
+    return (
+        np.stack(mean_embeddings, axis=0),
+        np.array(overalls_list, dtype=np.float32),
+        names_list,
+    )
 
 
 class SofifaAggregatedDataset(Dataset):
