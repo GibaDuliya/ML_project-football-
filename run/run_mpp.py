@@ -215,7 +215,7 @@ def build_model(args, vocab):
     teams_vocab_size = vocab["team_pad_token_id"]
 
     if args.model == "transformer":
-        from models.pretrain import MaskedPlayerModel
+        from models.transformer.pretrain import MaskedPlayerModel
         model = MaskedPlayerModel(
             embed_size=args.embed_size,
             num_layers=args.num_layers,

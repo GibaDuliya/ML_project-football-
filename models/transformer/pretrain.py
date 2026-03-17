@@ -9,8 +9,8 @@ import torch
 import torch.nn as nn
 from transformers.modeling_outputs import MaskedLMOutput
 
-from .transformer.encoder import PlayerEncoder
-from .heads import MPPHead
+from .encoder import PlayerEncoder
+from ..heads import MPPHead
 
 
 class MaskedPlayerModel(nn.Module):

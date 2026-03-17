@@ -99,7 +99,7 @@ collator_for_trainer = DataCollatorPreCollated()
 print("Пресобранных батчей (repeat):", n_batches, "train:", len(train_batches), "eval:", len(dev_batches))
 print("Шагов за эпоху:", len(train_batches), "эффективный батч:", sample_batch_size)
 
-from models.pretrain import MaskedPlayerModel
+from models.transformer.pretrain import MaskedPlayerModel
 from training.trainer import build_training_args, build_trainer
 from training.metrics import compute_metrics_mpp
 

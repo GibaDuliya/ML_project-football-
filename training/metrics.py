@@ -39,6 +39,13 @@ def compute_metrics_mpp(eval_pred) -> dict[str, float]:
     logits = logits.reshape(-1, vocab_size)
     labels = labels.reshape(-1)
 
+    # HF Trainer may pad labels and logits to different lengths when
+    # eval batches have uneven sizes (drop_last=False). Truncate to
+    # the shorter length — the extra padded labels are -100 anyway.
+    n = min(logits.shape[0], labels.shape[0])
+    logits = logits[:n]
+    labels = labels[:n]
+
     # keep only masked tokens
     mask = labels != -100
     logits = logits[mask]
