@@ -32,6 +32,8 @@ class RatingHeadTrainer:
         device: Optional[torch.device] = None,
         logging_steps: int = 10,
         save_best: bool = True,
+        target_mean: float | None = None,
+        target_std: float | None = None,
     ):
         self.head = head
         self.train_loader = train_loader
@@ -44,26 +46,43 @@ class RatingHeadTrainer:
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.head = self.head.to(self.device)
         self.optimizer = torch.optim.AdamW(self.head.parameters(), lr=lr, weight_decay=weight_decay)
-        self.best_eval_rmse = float("inf")
+        self.best_eval_rmse = float("inf")  # RMSE in original rating scale
         self.train_ds_len = len(train_loader.dataset)
         self.eval_ds_len = len(eval_loader.dataset)
+        self.target_mean = float(target_mean) if target_mean is not None else None
+        self.target_std = float(target_std) if target_std is not None else None
+        if (self.target_mean is None) ^ (self.target_std is None):
+            raise ValueError("Provide both target_mean and target_std, or neither.")
+        if self.target_std is not None and self.target_std <= 0:
+            raise ValueError("target_std must be > 0.")
+
+    def _normalize_y(self, y: torch.Tensor) -> torch.Tensor:
+        if self.target_mean is None:
+            return y
+        return (y - self.target_mean) / self.target_std
+
+    def _denormalize_y(self, y: torch.Tensor) -> torch.Tensor:
+        if self.target_mean is None:
+            return y
+        return y * self.target_std + self.target_mean
 
     def _forward_batch(self, batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         emb = batch["aggregated_embedding"].to(self.device)  # (batch, embed_size)
         overall = batch["overall"].to(self.device)
+        overall_n = self._normalize_y(overall)
         # head ожидает (batch, seq_len, embed_size); seq_len=1
         enc_out = emb.unsqueeze(1)
         attn = torch.ones(enc_out.size(0), 1, dtype=torch.long, device=self.device)
         pred = self.head(enc_out, attn).squeeze(-1)
-        return pred, overall
+        return pred, overall_n
 
     def train(self) -> float:
         for epoch in range(self.num_epochs):
             self.head.train()
             train_loss = 0.0
             for batch in self.train_loader:
-                pred, overall = self._forward_batch(batch)
-                loss = F.mse_loss(pred, overall)
+                pred, overall_n = self._forward_batch(batch)
+                loss = F.mse_loss(pred, overall_n)
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
@@ -71,13 +90,17 @@ class RatingHeadTrainer:
             train_loss /= self.train_ds_len
 
             self.head.eval()
-            eval_loss = 0.0
+            # Compute RMSE in original rating scale (even if training uses normalized targets)
+            se = 0.0
+            n_total = 0
             with torch.no_grad():
                 for batch in self.eval_loader:
-                    pred, overall = self._forward_batch(batch)
-                    eval_loss += F.mse_loss(pred, overall).item() * batch["overall"].size(0)
-            eval_loss /= self.eval_ds_len
-            eval_rmse = eval_loss ** 0.5
+                    pred_n, overall_n = self._forward_batch(batch)
+                    pred = self._denormalize_y(pred_n)
+                    overall = self._denormalize_y(overall_n)
+                    se += ((pred - overall) ** 2).sum().item()
+                    n_total += overall.numel()
+            eval_rmse = (se / max(1, n_total)) ** 0.5
 
             if self.save_best and eval_rmse < self.best_eval_rmse:
                 self.best_eval_rmse = eval_rmse
