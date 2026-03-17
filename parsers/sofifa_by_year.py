@@ -76,7 +76,8 @@ def get_roster_id(year: int) -> str | None:
     if year in ROSTER_BY_YEAR:
         return ROSTER_BY_YEAR[year]
     # Эвристика для лет без явной записи (SoFIFA обычно есть с FIFA 98)
-    if 1998 <= year <= 99:
+    # 1998-1999: 980042, 990042
+    if 1998 <= year <= 1999:
         return f"{year % 100:02d}0042"
     if 2000 <= year <= 2025:
         return f"{year % 100:02d}0042"
@@ -111,12 +112,23 @@ def season_to_rating_year(season_name: str) -> int | None:
     if pd.isna(season_name) or not str(season_name).strip():
         return None
     s = str(season_name).strip()
-    if "/" in s:
-        parts = s.split("/")
-        if len(parts) == 2 and parts[1].isdigit():
-            return int(parts[1])
-    if s.isdigit():
-        return int(s) + 1
+    # Common season formats: "2016/2017", "2016-2017", "2016/17"
+    m = re.match(r"^\s*(\d{4})\s*[/\-]\s*(\d{2}|\d{4})\s*$", s)
+    if m:
+        y1 = int(m.group(1))
+        y2s = m.group(2)
+        if len(y2s) == 4:
+            return int(y2s)
+        # "2016/17" -> 2017, "1998/99" -> 1999
+        y2 = int(y2s)
+        century = 2000 if y1 >= 2000 else 1900
+        return century + y2
+
+    # Single year: "2018" -> 2019
+    m = re.match(r"^\s*(\d{4})\s*$", s)
+    if m:
+        return int(m.group(1)) + 1
+
     return None
 
 
@@ -130,6 +142,9 @@ def fetch_page(url: str):
         except requests.RequestException as e:
             if attempt < MAX_RETRIES - 1:
                 time.sleep(random.uniform(1, 3))
+            else:
+                # Last attempt failed
+                print(f"Failed to fetch: {url} ({type(e).__name__}: {e})")
     return None
 
 
@@ -205,9 +220,25 @@ def get_next_page_url(soup: BeautifulSoup, base_url: str = BASE_URL) -> str | No
     return None
 
 
-def scrape_sofifa_year(roster_id: str, max_pages: int | None = None) -> list[dict]:
-    """Скрапит всех игроков за один ростер. URL и пагинация как в risingBALLER (Next link)."""
-    start_url = f"https://sofifa.com/?r={roster_id}&col=oa&sort=desc&offset=0"
+def _page_title(soup: BeautifulSoup) -> str:
+    title = soup.find("title")
+    return title.get_text(" ", strip=True) if title else ""
+
+
+def scrape_sofifa_year(
+    roster_id: str,
+    *,
+    max_pages: int | None = None,
+    expected_version_key: str | None = None,
+) -> list[dict]:
+    """Скрапит всех игроков за один ростер.
+
+    Важно: SoFIFA может игнорировать неизвестные/старые roster_id и отдавать текущую версию.
+    Если задан expected_version_key (например, "FIFA 07" / "FC 24"), проверяем, что он
+    присутствует в title страницы; иначе считаем ростер недоступным и возвращаем [].
+    """
+    # Используем /players (это стабильнее, чем главная) и set=true для применения параметров.
+    start_url = f"https://sofifa.com/players?r={roster_id}&set=true&col=oa&sort=desc&offset=0"
     all_players = []
     url = start_url
     page = 1
@@ -217,6 +248,13 @@ def scrape_sofifa_year(roster_id: str, max_pages: int | None = None) -> list[dic
             r = fetch_page(url)
             if not r:
                 break
+            soup = BeautifulSoup(r.text, "html.parser")
+            if page == 1 and expected_version_key:
+                title = _page_title(soup)
+                if expected_version_key not in title:
+                    # Ростер не применился (часто для старых лет сайт отдаёт текущую версию)
+                    print(f"  r={roster_id}: expected '{expected_version_key}' but got title='{title}'. Skipping.")
+                    return []
             batch = parse_players_from_html(r.text, BASE_URL)
             if not batch:
                 break
@@ -225,7 +263,6 @@ def scrape_sofifa_year(roster_id: str, max_pages: int | None = None) -> list[dic
             pbar.update(1)
             if max_pages is not None and page >= max_pages:
                 break
-            soup = BeautifulSoup(r.text, "html.parser")
             next_url = get_next_page_url(soup, BASE_URL)
             if not next_url or next_url == url:
                 break
@@ -308,7 +345,12 @@ def get_rating_years_from_matches(csv_path: Path) -> set[int]:
 def main() -> None:
     import argparse
     ap = argparse.ArgumentParser(description="Scrape SoFIFA ratings by year (next year after season).")
-    ap.add_argument("--max-pages", type=int, default=None, help="Max pages per year (default: all)")
+    ap.add_argument(
+        "--max-pages",
+        type=int,
+        default=None,
+        help="Сколько страниц скачать на каждый год (по умолчанию: все).",
+    )
     ap.add_argument("--year", type=int, default=None, help="Only fetch this rating year (default: all)")
     args = ap.parse_args()
 
@@ -358,13 +400,15 @@ def main() -> None:
             print(f"  {year}: skip (exists). Delete {out_csv} to re-fetch.")
             continue
         print(f"  {year}: fetching {version_key} r={roster_id} ...")
-        players = scrape_sofifa_year(roster_id, max_pages=args.max_pages)
+        players = scrape_sofifa_year(roster_id, max_pages=args.max_pages, expected_version_key=version_key)
         if not players and year == 2025:
             if copy_latest_sofifa_csv_to_year(root, year):
                 print(f"  {year}: used dataset/sofifa_players.csv (current snapshot).")
                 continue
         if not players:
-            players = fetch_sofifa_year_selenium(roster_id)
+            # Selenium fallback: также учитываем лимит страниц, если задан
+            selenium_pages = args.max_pages if args.max_pages is not None else 50
+            players = fetch_sofifa_year_selenium(roster_id, max_pages=selenium_pages)
         if not players:
             print(f"  {year}: no data (install selenium for JS-rendered page).")
             continue
