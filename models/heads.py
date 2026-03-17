@@ -12,6 +12,8 @@ RegressionHead      — Generic regression head.
 build_head()        — factory function: config dict → Head instance.
 """
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
@@ -43,6 +45,48 @@ class MPPHead(nn.Module):
         return self.projection(encoder_output)
 
 
+class StatsPredictionHead(nn.Module):
+    """Head for predicting 39 player statistics from encoder embeddings.
+
+    Input: embeddings after the transformer block (batch, seq_len, embed_size).
+    Output: per-token regression to 39 stats (batch, seq_len, num_stats).
+    Loss: MSE (or L1) only on non-padded positions (attention_mask).
+
+    Args:
+        embed_size: encoder embedding dimension.
+        num_stats: number of stat targets (default 39).
+        hidden_dim: optional hidden size for MLP; if 0 or None, use single Linear.
+    """
+
+    def __init__(
+        self,
+        embed_size: int,
+        num_stats: int = 39,
+        hidden_dim: Optional[int] = 256,
+    ):
+        super().__init__()
+        self.num_stats = num_stats
+        if hidden_dim and hidden_dim > 0:
+            self.mlp = nn.Sequential(
+                nn.Linear(embed_size, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(hidden_dim, num_stats),
+            )
+        else:
+            self.mlp = nn.Linear(embed_size, num_stats)
+
+    def forward(self, encoder_output: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            encoder_output: (batch, seq_len, embed_size)
+
+        Returns:
+            predictions: (batch, seq_len, num_stats)
+        """
+        return self.mlp(encoder_output)
+
+
 class NMSPHead(nn.Module):
     """Head for Next Match Statistics Prediction.
 
@@ -64,7 +108,15 @@ class NMSPHead(nn.Module):
         hidden_dim: int = 512,
     ):
         super().__init__()
-        ...
+        self.max_seq_length = max_seq_length
+        self.num_target_stats = num_target_stats
+        flat_size = max_seq_length * embed_size
+        self.mlp = nn.Sequential(
+            nn.Linear(flat_size, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, 2 * num_target_stats),
+        )
 
     def forward(self, encoder_output: torch.Tensor) -> torch.Tensor:
         """
@@ -74,7 +126,9 @@ class NMSPHead(nn.Module):
         Returns:
             predictions: (batch, 2 * num_target_stats)
         """
-        ...
+        b, s, e = encoder_output.shape
+        x = encoder_output.reshape(b, s * e)
+        return self.mlp(x)
 
 
 class ClassificationHead(nn.Module):
@@ -121,10 +175,11 @@ class RegressionHead(nn.Module):
     """Generic regression head.
 
     Supports per_token or per_sequence regression.
+    For rating prediction: output_dim=1, pool="per_sequence" (one scalar per sample).
 
     Args:
         embed_size: input dimension.
-        output_dim: number of regression targets.
+        output_dim: number of regression targets (e.g. 1 for overall rating).
         hidden_dim: MLP hidden size.
         pool: "per_token" or "per_sequence".
     """
@@ -137,14 +192,36 @@ class RegressionHead(nn.Module):
         pool: str = "per_sequence",
     ):
         super().__init__()
-        ...
+        self.pool = pool
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_size, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, output_dim),
+        )
 
     def forward(
         self,
         encoder_output: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        ...
+        """
+        Args:
+            encoder_output: (batch, seq_len, embed_size)
+            attention_mask: (batch, seq_len) — for per_sequence: mask padding (0) before mean.
+
+        Returns:
+            (batch, output_dim) if per_sequence else (batch, seq_len, output_dim)
+        """
+        if self.pool == "per_sequence":
+            if attention_mask is None:
+                x = encoder_output.mean(dim=1)
+            else:
+                mask = attention_mask.unsqueeze(-1).float()
+                x = (encoder_output * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
+            return self.mlp(x)
+        else:
+            return self.mlp(encoder_output)
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +231,7 @@ class RegressionHead(nn.Module):
 HEAD_REGISTRY = {
     "mpp": MPPHead,
     "nmsp": NMSPHead,
+    "stats_prediction": StatsPredictionHead,
     "classification": ClassificationHead,
     "regression": RegressionHead,
 }
@@ -173,4 +251,8 @@ def build_head(head_config: dict, **kwargs) -> nn.Module:
     Raises:
         ValueError: if head_config["type"] not in HEAD_REGISTRY.
     """
-    ...
+    config = dict(head_config)
+    head_type = config.pop("type", None)
+    if head_type not in HEAD_REGISTRY:
+        raise ValueError(f"Unknown head type: {head_type}. Known: {list(HEAD_REGISTRY)}")
+    return HEAD_REGISTRY[head_type](**{**config, **kwargs})
