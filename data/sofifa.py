@@ -364,19 +364,46 @@ def build_aggregated_embeddings_next_year(
         if embed_size is None:
             embed_size = enc_out.shape[-1]
         seq_len = enc_out.shape[1]
-        mask = batch["attention_mask"]
-        for i in range(min(seq_len, len(rows_ordered))):
-            if mask[i].item() != 1:
-                continue
-            player_name = rows_ordered.iloc[i]["player_name"]
-            name_norm = normalize_player_name(str(player_name))
-            key = (name_norm, rating_year)
-            overall = lookup.get(key)
-            if overall is None:
-                continue
-            emb = enc_out[0, i].cpu().numpy().astype(np.float32)
-            group_key = (str(player_name), season_name)
-            agg[group_key].append((emb, overall))
+        mask = batch["attention_mask"].cpu().numpy().astype(np.int64)
+
+        # Two possible layouts:
+        # - transformer (sequential): token i corresponds to rows_ordered.iloc[i]
+        # - gMLP (position-indexed): seq_len == 50 and token slot = team_idx*25 + (position_id-1)
+        if seq_len == 50:
+            num_positions = 25
+            team_to_idx = {team_a: 0, team_b: 1}
+            for _, row in rows_ordered.iterrows():
+                pos_id = int(row["position_id"])
+                if not (1 <= pos_id <= num_positions):
+                    continue
+                team_idx = team_to_idx.get(row["team_name"])
+                if team_idx is None:
+                    continue
+                slot = team_idx * num_positions + (pos_id - 1)
+                if slot < 0 or slot >= seq_len:
+                    continue
+                if mask[slot] != 1:
+                    continue
+                player_name = str(row["player_name"])
+                name_norm = normalize_player_name(player_name)
+                overall = lookup.get((name_norm, rating_year))
+                if overall is None:
+                    continue
+                emb = enc_out[0, slot].cpu().numpy().astype(np.float32)
+                group_key = (player_name, season_name)
+                agg[group_key].append((emb, overall))
+        else:
+            for i in range(min(seq_len, len(rows_ordered))):
+                if int(mask[i]) != 1:
+                    continue
+                player_name = str(rows_ordered.iloc[i]["player_name"])
+                name_norm = normalize_player_name(player_name)
+                overall = lookup.get((name_norm, rating_year))
+                if overall is None:
+                    continue
+                emb = enc_out[0, i].cpu().numpy().astype(np.float32)
+                group_key = (player_name, season_name)
+                agg[group_key].append((emb, overall))
 
     if not agg:
         return np.zeros((0, embed_size or 1), dtype=np.float32), np.zeros(0, dtype=np.float32), []
@@ -418,7 +445,12 @@ class SofifaAggregatedDataset(Dataset):
         return len(self.meta)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        return {
+        row = self.meta.iloc[idx]
+        out: dict[str, torch.Tensor] = {
             "aggregated_embedding": torch.from_numpy(self.embeddings[idx].copy()),
-            "overall": torch.tensor(self.meta.iloc[idx]["overall"], dtype=torch.float32),
         }
+        if "overall" in self.meta.columns:
+            out["overall"] = torch.tensor(row["overall"], dtype=torch.float32)
+        if "class_id" in self.meta.columns:
+            out["class_id"] = torch.tensor(int(row["class_id"]), dtype=torch.long)
+        return out

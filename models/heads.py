@@ -153,7 +153,13 @@ class ClassificationHead(nn.Module):
         pool: str = "per_token",
     ):
         super().__init__()
-        ...
+        self.pool = pool
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_size, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, num_classes),
+        )
 
     def forward(
         self,
@@ -168,7 +174,14 @@ class ClassificationHead(nn.Module):
         Returns:
             logits: (batch, [seq_len,] num_classes)
         """
-        ...
+        if self.pool == "per_sequence":
+            if attention_mask is None:
+                x = encoder_output.mean(dim=1)
+            else:
+                mask = attention_mask.unsqueeze(-1).float()
+                x = (encoder_output * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
+            return self.mlp(x)
+        return self.mlp(encoder_output)
 
 
 class RegressionHead(nn.Module):

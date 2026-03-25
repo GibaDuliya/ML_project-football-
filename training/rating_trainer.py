@@ -115,3 +115,82 @@ class RatingHeadTrainer:
             print("Best eval RMSE:", self.best_eval_rmse)
             print("Голова сохранена:", self.output_dir / "rating_head.pt")
         return self.best_eval_rmse
+
+
+class RatingBinHeadTrainer:
+    """Классификация бина рейтинга по агрегированному эмбеддингу (CE loss, accuracy на eval)."""
+
+    def __init__(
+        self,
+        head: torch.nn.Module,
+        train_loader: DataLoader,
+        eval_loader: DataLoader,
+        *,
+        output_dir: str | Path = ".",
+        num_epochs: int = 50,
+        lr: float = 1e-3,
+        weight_decay: float = 0.01,
+        device: Optional[torch.device] = None,
+        logging_steps: int = 10,
+        save_best: bool = True,
+    ):
+        self.head = head
+        self.train_loader = train_loader
+        self.eval_loader = eval_loader
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.num_epochs = num_epochs
+        self.logging_steps = logging_steps
+        self.save_best = save_best
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.head = self.head.to(self.device)
+        self.optimizer = torch.optim.AdamW(self.head.parameters(), lr=lr, weight_decay=weight_decay)
+        self.best_eval_acc = 0.0
+        self.train_ds_len = len(train_loader.dataset)
+        self.eval_ds_len = len(eval_loader.dataset)
+
+    def _forward_batch(self, batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
+        emb = batch["aggregated_embedding"].to(self.device)
+        y = batch["class_id"].to(self.device)
+        enc_out = emb.unsqueeze(1)
+        attn = torch.ones(enc_out.size(0), 1, dtype=torch.long, device=self.device)
+        logits = self.head(enc_out, attn)
+        return logits, y
+
+    def train(self) -> float:
+        for epoch in range(self.num_epochs):
+            self.head.train()
+            train_loss = 0.0
+            for batch in self.train_loader:
+                logits, y = self._forward_batch(batch)
+                loss = F.cross_entropy(logits, y)
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+                train_loss += loss.item() * batch["class_id"].size(0)
+            train_loss /= max(1, self.train_ds_len)
+
+            self.head.eval()
+            correct = 0
+            total = 0
+            with torch.no_grad():
+                for batch in self.eval_loader:
+                    logits, y = self._forward_batch(batch)
+                    pred = logits.argmax(dim=-1)
+                    correct += (pred == y).sum().item()
+                    total += y.numel()
+            eval_acc = correct / max(1, total)
+
+            if self.save_best and eval_acc > self.best_eval_acc:
+                self.best_eval_acc = eval_acc
+                torch.save(self.head.state_dict(), self.output_dir / "rating_class_head.pt")
+
+            if (epoch + 1) % self.logging_steps == 0 or epoch == 0:
+                print(
+                    f"Epoch {epoch + 1}/{self.num_epochs}  "
+                    f"train_loss={train_loss:.4f}  eval_acc={eval_acc:.4f}"
+                )
+        if self.save_best:
+            print("Best eval accuracy:", self.best_eval_acc)
+            print("Голова сохранена:", self.output_dir / "rating_class_head.pt")
+        return float(self.best_eval_acc)
