@@ -1,0 +1,31 @@
+# CPU training — mount your CSV and a writable output directory.
+# Usage:
+#   export DATA_CSV=/app/dataset/data_with_dates.csv   # path inside container
+#   docker compose run --rm train
+#
+# Or one-off:
+#   docker compose run --rm train --data /app/dataset/data_with_dates.csv --output /app/outputs/mpp_docker --epochs 50
+
+services:
+  train:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ml-football-train:latest
+    working_dir: /app
+    environment:
+      PYTHONPATH: /app
+    volumes:
+      # Host CSV + processed cache / checkpoints (adjust host paths)
+      - ./dataset:/app/dataset
+      - ./outputs:/app/outputs
+    # Override with your data path and hyperparameters
+    command:
+      - python
+      - run/run_mpp.py
+      - --data
+      - /app/dataset/data_with_dates.csv
+      - --output
+      - /app/outputs/mpp_docker
+      - --epochs
+      - "10"

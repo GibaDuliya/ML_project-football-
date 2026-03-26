@@ -1,0 +1,10 @@
+# GPU variant (needs NVIDIA Container Toolkit):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml build
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm train
+
+services:
+  train:
+    build:
+      dockerfile: Dockerfile.gpu
+    image: ml-football-train:gpu
+    gpus: all

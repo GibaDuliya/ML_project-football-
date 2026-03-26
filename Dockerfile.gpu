@@ -1,0 +1,23 @@
+# GPU training image (CUDA + PyTorch from official image).
+# Requires: NVIDIA Container Toolkit, nvidia-docker.
+# Build:  docker build -f Dockerfile.gpu -t ml-football-train:gpu .
+# Run:    docker run --gpus all --rm -v "$(pwd)/dataset:/app/dataset:ro" -v "$(pwd)/outputs:/app/outputs" ml-football-train:gpu \
+#            --data /app/dataset/your_data.csv --output /app/outputs/mpp_run --epochs 10
+
+FROM pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+COPY requirements.txt .
+# Base image already includes torch; skip duplicate pin from requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    sed '/^torch/d' requirements.txt > /tmp/requirements_no_torch.txt && \
+    pip install --no-cache-dir -r /tmp/requirements_no_torch.txt
+
+COPY . .
+
+CMD ["python", "run/run_mpp.py", "--help"]
